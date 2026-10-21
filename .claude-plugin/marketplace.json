@@ -1,0 +1,22 @@
+{
+  "name": "folipage-skills",
+  "owner": {
+    "name": "200solutions"
+  },
+  "metadata": {
+    "description": "Tutorials with annotated screenshots, screen videos and narration in 57 languages, ready for folipage."
+  },
+  "plugins": [
+    {
+      "name": "folipage-skills",
+      "description": "Write web app tutorials, record screen videos and narrate or dub them, ready to publish on folipage.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/folipage-screen-video",
+        "./skills/folipage-tutorial",
+        "./skills/folipage-video-voiceover"
+      ]
+    }
+  ]
+}

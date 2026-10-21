@@ -1,0 +1,42 @@
+{
+	"baseUrl": "https://app.example.com",
+	"outDir": "videos",
+	"viewport": { "width": 1280, "height": 720 },
+	"scale": 1.5,
+	"locale": "cs-CZ",
+	"language": "cs",
+	"voice": "marin",
+	"pronounce": { "PDF": "pé dé ef" },
+	"ringColor": "#e11d48",
+	"mask": ["[data-testid=user-email]", ".avatar"],
+	"hide": ["#intercom-container", ".cookie-banner"],
+	"replaceText": [["Marta Nováková", "Jana Ukázková"], ["marta@firma.cz", "jana@example.com"]],
+	"videos": [
+		{
+			"id": "create-an-invoice",
+			"title": "Založení faktury",
+			"start": "/invoices",
+			"steps": [
+				{ "action": "say", "text": "V tomto videu založíme novou fakturu a stáhneme ji jako PDF." },
+				{ "action": "pause", "ms": 600 },
+				{
+					"action": "click",
+					"target": { "role": "button", "name": "Nová faktura" },
+					"ring": true,
+					"say": "Novou fakturu založíte tlačítkem Nová faktura vpravo nahoře."
+				},
+				{ "action": "wait", "target": { "role": "heading", "name": "Nová faktura" } },
+				{ "action": "fill", "target": { "label": "Zákazník" }, "value": "Gama spol. s r.o.", "say": "Vyplňte zákazníka a částku." },
+				{ "action": "fill", "target": { "label": "Částka" }, "value": "8 900" },
+				{ "action": "select", "target": { "label": "Splatnost" }, "value": "30 dní", "say": "Splatnost nastavte na třicet dní." },
+				{ "action": "click", "target": { "role": "button", "name": "Uložit" }, "say": "Fakturu uložte." },
+				{ "action": "wait", "target": { "role": "status" } },
+				{
+					"action": "ring",
+					"target": { "role": "button", "name": "Stáhnout PDF" },
+					"say": "Hotovo. Fakturu teď najdete v seznamu a tady si ji stáhnete jako PDF."
+				}
+			]
+		}
+	]
+}

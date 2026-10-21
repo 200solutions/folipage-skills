@@ -1,0 +1,45 @@
+{
+	"baseUrl": "https://app.example.com",
+	"docsDir": "docs",
+	"viewport": { "width": 1440, "height": 900 },
+	"scale": 2,
+	"colorScheme": "light",
+	"locale": "en-US",
+	"mask": ["[data-testid=user-email]", ".avatar"],
+	"hide": ["#intercom-container"],
+	"ringColor": "#111111",
+	"replaceText": [["Marta Nováková", "Jane Doe"], ["marta@firma.cz", "jane.doe@example.com"]],
+	"flows": [
+		{
+			"id": "create-an-invoice",
+			"title": "Create an invoice",
+			"steps": [
+				{ "action": "goto", "url": "/dashboard" },
+				{
+					"action": "shot",
+					"file": "02-Invoices/images/create-an-invoice-1.png",
+					"alt": "The Invoices item in the left menu, highlighted",
+					"highlight": { "role": "link", "name": "Invoices" }
+				},
+				{ "action": "click", "target": { "role": "link", "name": "Invoices" } },
+				{ "action": "wait", "target": { "role": "heading", "name": "Invoices" } },
+				{
+					"action": "shot",
+					"file": "02-Invoices/images/create-an-invoice-2.png",
+					"alt": "The New invoice button in the top right corner of the list, highlighted",
+					"highlight": { "role": "button", "name": "New invoice" },
+					"dim": true
+				},
+				{ "action": "click", "target": { "role": "button", "name": "New invoice" } },
+				{
+					"action": "shot",
+					"file": "02-Invoices/images/create-an-invoice-3.png",
+					"alt": "The new invoice dialog: 1 the customer, 2 the due date",
+					"crop": { "role": "dialog" },
+					"highlight": [{ "label": "Customer" }, { "label": "Due date" }],
+					"labels": ["1", "2"]
+				}
+			]
+		}
+	]
+}
