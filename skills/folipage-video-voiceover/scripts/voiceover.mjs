@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 /**
- * Voiceover for videos: OpenAI text-to-speech per segment, laid onto the video with ffmpeg.
+ * Voiceover for videos: text-to-speech per segment, laid onto the video with ffmpeg. The voice comes from
+ * folipage, an ElevenLabs one on the organization's credits (OpenAI's voices are off, OWN_KEY_VOICES). A
+ * segment's text may carry audio tags ([nadšení], [smích], [povzdech] …): the voice acts them out, and the
+ * subtitles leave them out. `voices` lists the tags folipage knows.
  *
- *   node voiceover.mjs voices                                   the voices to choose from
+ *   node voiceover.mjs voices                                   the voices to choose from, and the audio tags
  *   node voiceover.mjs languages                                the languages the voice speaks
- *   node voiceover.mjs say "<text>" [--out sample.wav]          one sample, to try a voice
+ *   node voiceover.mjs say "<text>" [--out sample.wav]          one sample, to try a voice or a tagged line
  *   node voiceover.mjs synth <segments.json> [--out <dir>]      a WAV per segment and <dir>/durations.json
  *   node voiceover.mjs mix <video> <timeline.json> [--audio <dir>] [--out <file.mp4>]
+ *   node voiceover.mjs upload <video.mp4> <timeline.json> [--audio <dir>] [--title "…"] [--script video.json]
+ *                                                               the mixed video into folipage's archive (Knihovna › Videa s hlasem)
  *   node voiceover.mjs transcribe <video> [--out timeline.json] [--source-lang en] [--lang de]
  *   node voiceover.mjs frames <video> [--every 2] [--out frames]
  *
  * Voice (say, synth; the segments file may set them too, the options win):
  *   --lang de       the language of the voice, required (or "language" in the file); any code from `languages`,
  *                   with a region if it matters: pt-BR, en-GB, es-MX, fr-CA
- *   --voice marin   --model gpt-4o-mini-tts   --instructions "…"
+ *   --voice jana    no --voice means the organization's voice for the language (its Marie tab);
+ *                   `voices [--lang de]` lists the voices that speak it
  * Mix:
  *   --original 0     volume of the video's own sound, 0–1 (0 drops it)
  *   --gap 0.3        seconds of quiet after a segment before the next one may start
@@ -25,19 +31,27 @@
  *                    folipage and the organization's AI credits pay for it — no OpenAI key needed
  *   FOLIPAGE_ORG     which organization pays, by name, slug or id (only when the token sees several)
  *   FOLIPAGE_URL     the folipage console, https://app.folipage.com unless it runs elsewhere
- *   OPENAI_API_KEY   without a folipage token: straight to OpenAI on your own key
+ *   OPENAI_API_KEY   without a folipage token: `transcribe` straight with OpenAI on your own key (no voice)
  * Needs Node.js 20+ and ffmpeg with ffprobe on PATH.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const API = "https://api.openai.com/v1";
 const FOLIPAGE = "https://app.folipage.com";
 const DEFAULTS = { model: "gpt-4o-mini-tts", voice: "marin", gap: 0.3, maxTempo: 1, original: 0, subs: "srt" };
+
+/**
+ * Whether a user's own OpenAI key may speak too. Off since 2026-10-20: the
+ * voices are folipage's ElevenLabs ones (as in folipage, STANDARD_VOICES in
+ * apps/api/src/routes/voice.ts); the code stays for when they come back. An
+ * OpenAI key still transcribes.
+ */
+const OWN_KEY_VOICES = false;
 
 const VOICES = [
 	["marin", "natural, higher voice — recommended"],
@@ -182,10 +196,23 @@ function backend() {
 		fail(
 			"Nobody to speak. Easiest: a folipage API key — in folipage open Profil › API › Nový klíč, choose " +
 				'"Čtení i úpravy" without limiting it to portals, and put FOLIPAGE_TOKEN=… into a .env file ' +
-				"in the working directory; the organization's AI credits pay for the voice. Or set OPENAI_API_KEY to use your own OpenAI key.",
+				"in the working directory; the organization's AI credits pay for the voice.",
 			2,
 		);
 	}
+	return chosen;
+}
+
+/** The backend for a voice: folipage, unless an own OpenAI key may speak (OWN_KEY_VOICES). */
+function voiceBackend() {
+	const chosen = backend();
+	if (chosen.kind === "openai" && !OWN_KEY_VOICES)
+		fail(
+			"The voice comes from folipage (ElevenLabs voices on the organization's AI credits); OPENAI_API_KEY only " +
+				"transcribes. In folipage open Profil › API › Nový klíč, choose \"Čtení i úpravy\" without limiting it " +
+				"to portals, and put FOLIPAGE_TOKEN=… into a .env file in the working directory.",
+			2,
+		);
 	return chosen;
 }
 
@@ -320,17 +347,46 @@ function defaultInstructions(lang) {
 	);
 }
 
-function voiceSettings(args, data = {}) {
+/**
+ * The voices folipage offers this organization in a language, its own one for it and the prices;
+ * asked once. A language folipage does not list voices for gets those of its default one.
+ */
+let offered;
+function folipageVoices(lang) {
+	offered ??= folipageOrg().then(async (org) => {
+		const query = lang ? `?language=${encodeURIComponent(primary(lang))}` : "";
+		try {
+			return await (await folipage(`/orgs/${org.id}/voice/voices${query}`)).json();
+		} catch (error) {
+			if (!query || !/^folipage 400/.test(error.message)) throw error;
+			console.warn(`Warning: folipage lists no voices for ${languageName(lang)}; its default language's voices speak it.`);
+			return (await folipage(`/orgs/${org.id}/voice/voices`)).json();
+		}
+	});
+	return offered;
+}
+
+async function voiceSettings(args, data = {}) {
+	voiceBackend();
 	const lang = languageTag(args.lang ?? data.language, args.lang ? "--lang" : '"language"');
 	const model = args.model ?? data.model ?? DEFAULTS.model;
-	if (backend().kind === "folipage" && model !== DEFAULTS.model)
-		console.warn(`Warning: folipage speaks with ${DEFAULTS.model} only; "${model}" is ignored.`);
-	return {
+	const named = args.voice ?? data.voice;
+	const settings = {
 		lang,
-		model: backend().kind === "folipage" ? DEFAULTS.model : model,
-		voice: args.voice ?? data.voice ?? DEFAULTS.voice,
+		model,
+		voice: named ?? DEFAULTS.voice,
 		instructions: args.instructions ?? data.instructions ?? defaultInstructions(lang),
 	};
+	if (backend().kind !== "folipage") return settings;
+	if (model !== DEFAULTS.model) console.warn(`Warning: folipage chooses the model by the voice; "${model}" is ignored.`);
+	const list = await folipageVoices(lang);
+	settings.voice = named ?? list.voice;
+	const voice = list.voices.find((v) => v.id === settings.voice);
+	if (!voice) fail(`folipage has no voice "${settings.voice}" for ${languageName(lang)}. \`node voiceover.mjs voices --lang ${lang}\` lists them.`);
+	if (voice.premium && !list.premium.available) fail(list.premium.reason ?? "The voices are not available now.");
+	// The model is part of the cache key: the same text in a premium voice is a different file.
+	settings.model = voice.premium ? "elevenlabs" : DEFAULTS.model;
+	return settings;
 }
 
 /** Swaps words the voice gets wrong for how they sound ("Folipage" → "Folipejdž"); whole words only. */
@@ -342,19 +398,52 @@ function pronounce(text, map = {}) {
 	}, text);
 }
 
+/**
+ * Our own name, the way a Czech or Slovak voice should say it ("folipáč"
+ * otherwise); any case, longest first. The same as folipage's own voices do
+ * (apps/api/src/sites/pronounce.ts); other languages say it the English way.
+ */
+const BRAND = {
+	cs: [["folipage.com", "folipejdž tečka kom"], ["foli.page", "foli tečka pejdž"], ["folipage", "folipejdž"]],
+	sk: [["folipage.com", "folipejdž bodka kom"], ["foli.page", "foli bodka pejdž"], ["folipage", "folipejdž"]],
+};
+
+/** The text as the voice hears it: the timeline's `pronounce`, then our name for the language. */
+function spoken(text, map, lang) {
+	return (BRAND[primary(lang)] ?? []).reduce((out, [from, to]) => {
+		const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		return out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"), to);
+	}, pronounce(text, map));
+}
+
+/** Audio tags: `[úžas]`, `[šepot]`, `[pauza]` — acted out, never said or subtitled. */
+const TAG = /\[([^\]\n]{1,40})\]/g;
+
+/** The text without its audio tags, and the tags. */
+function untag(text) {
+	const tags = [...text.matchAll(TAG)].map((m) => m[1].trim());
+	const plain = text.replace(TAG, " ").replace(/\s{2,}/g, " ").replace(/\s+([,.!?…])/g, "$1").trim();
+	return { plain, tags };
+}
+
 async function speak(text, settings) {
+	// folipage acts the tags out itself (ElevenLabs' v3).
 	if (backend().kind === "folipage") {
 		const org = await folipageOrg();
 		const res = await folipage(`/orgs/${org.id}/voice/speech`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ text, voice: settings.voice, instructions: settings.instructions }),
+			body: JSON.stringify({ text, voice: settings.voice, instructions: settings.instructions, language: settings.lang }),
 		});
 		return Buffer.from(await res.arrayBuffer());
 	}
-	const body = { model: settings.model, voice: settings.voice, input: text, response_format: "wav" };
+	const { plain, tags } = untag(text);
+	const body = { model: settings.model, voice: settings.voice, input: plain, response_format: "wav" };
 	// Only the gpt-* speech models take instructions; tts-1 rejects them.
-	if (/^gpt-/.test(settings.model)) body.instructions = settings.instructions;
+	if (/^gpt-/.test(settings.model))
+		body.instructions = [settings.instructions, tags.length ? `Act out these cues, in this order, as you say the line: ${tags.join(", ")}.` : ""]
+			.filter(Boolean)
+			.join("\n");
 	const res = await openai("/audio/speech", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 	return Buffer.from(await res.arrayBuffer());
 }
@@ -382,23 +471,64 @@ function languages() {
 	const names = Object.entries(LANGUAGES)
 		.map(([code]) => [code, languageName(code)])
 		.sort((a, b) => a[1].localeCompare(b[1], "en"));
-	console.log(`Languages of OpenAI's voices (${names.length}); any voice speaks all of them. Add a region where it matters (pt-BR, en-GB, es-MX, fr-CA):\n`);
+	console.log(
+		`Languages of the voices (${names.length}); the Czech voices speak Czech only, the international ones all of them. ` +
+			"Add a region where it matters (pt-BR, en-GB, es-MX, fr-CA):\n",
+	);
 	for (const [code, name] of names) console.log(`  ${code.padEnd(4)} ${name}`);
 }
 
-function voices() {
-	console.log("Voices for gpt-4o-mini-tts (each one speaks any language; try two or three with `say`):\n");
-	for (const [name, note] of VOICES) console.log(`  ${name.padEnd(8)} ${note}`);
+async function voices(args) {
+	if (!setting("FOLIPAGE_TOKEN")) {
+		voiceBackend();
+		console.log("Voices for gpt-4o-mini-tts (each one speaks any language; try two or three with `say`):\n");
+		for (const [name, note] of VOICES) console.log(`  ${name.padEnd(8)} ${note}`);
+		return;
+	}
+	const lang = args.lang ? languageTag(args.lang) : undefined;
+	const list = await folipageVoices(lang);
+	const show = (voice) =>
+		console.log(`  ${voice.id.padEnd(8)} ${voice.name.padEnd(8)} ${voice.note}${voice.id === list.voice ? "   ← the organization's voice" : ""}`);
+	console.log(
+		`Voices (ElevenLabs), ${list.prices.voicePremium} credits per 100 characters` +
+			`${list.premium.available ? "" : ` — not available: ${list.premium.reason}`}:\n`,
+	);
+	list.voices.filter((v) => v.premium).forEach(show);
+	const standard = list.voices.filter((v) => !v.premium);
+	if (standard.length) {
+		console.log(`\nStandard voices (OpenAI), ${list.prices.voice} credits per 100 characters:\n`);
+		standard.forEach(show);
+	}
+	if (list.tags) {
+		const czech = Object.entries(list.tags.czech).map(([cs, en]) => `${cs}=${en}`);
+		console.log(
+			"\nAudio tags the voices act out (references/narration-guide.md says how to direct with them):\n" +
+				`  how a line is said: ${list.tags.delivery.join(", ")}\n` +
+				`  sounds:             ${list.tags.sounds.join(", ")}\n` +
+				`  pauses:             ${list.tags.pauses.join(", ")}\n` +
+				`  in Czech (written without diacritics here, with them in a line): ${czech.join(", ")}\n` +
+				"  Other short English directions work too, less reliably: [speaking slowly], [with a smile].",
+		);
+	}
+	console.log(
+		`\nThe voices that speak ${languageName(list.language ?? "cs")}; the notes are in Czech, as folipage shows them. ` +
+			"Pass --lang for another language's voices. Without --voice the organization's voice for the language " +
+			"speaks (chosen in folipage on the Marie page). Try two or three with `say`.",
+	);
 }
 
 /* -------------------------------------------------------------------- say */
 
 async function say(text, args) {
-	const settings = voiceSettings(args);
+	const settings = await voiceSettings(args);
 	const out = resolve(args.out ?? `voice-sample-${settings.voice}.wav`);
 	mkdirSync(dirname(out), { recursive: true });
-	const seconds = await synthOne(pronounce(text, args.pronounce ? JSON.parse(args.pronounce) : {}), out, settings);
-	console.log(`${out}  (${seconds.toFixed(1)} s, voice ${settings.voice}, ${settings.model})`);
+	const seconds = await synthOne(spoken(text, args.pronounce ? JSON.parse(args.pronounce) : {}, settings.lang), out, settings);
+	const { tags } = untag(text);
+	console.log(
+		`${out}  (${seconds.toFixed(1)} s, voice ${settings.voice}, ${settings.model}` +
+			`${tags.length ? `, acted out: ${tags.join(", ")}` : ""})`,
+	);
 	if (process.platform === "darwin") console.log(`Listen: afplay "${out}"`);
 }
 
@@ -423,7 +553,7 @@ async function synth(file, args) {
 	const path = resolve(file);
 	const data = readJson(path);
 	const segments = checkSegments(data, file);
-	const settings = voiceSettings(args, data);
+	const settings = await voiceSettings(args, data);
 	const outDir = resolve(args.out ?? join(dirname(path), "audio"));
 	mkdirSync(outDir, { recursive: true });
 
@@ -437,7 +567,7 @@ async function synth(file, args) {
 	const queue = [...segments];
 	const worker = async () => {
 		for (let s = queue.shift(); s; s = queue.shift()) {
-			const input = pronounce(s.text.trim(), data.pronounce);
+			const input = spoken(s.text.trim(), data.pronounce, settings.lang);
 			const key = createHash("sha256").update(JSON.stringify([settings.model, settings.voice, settings.instructions, input])).digest("hex").slice(0, 16);
 			const wav = join(outDir, `${s.id}.wav`);
 			const metaFile = join(outDir, `${s.id}.json`);
@@ -451,7 +581,10 @@ async function synth(file, args) {
 			const seconds = await synthOne(input, wav, settings);
 			sent += input.length;
 			durations[s.id] = Math.round(seconds * 1000) / 1000;
-			writeFileSync(metaFile, `${JSON.stringify({ key, duration: durations[s.id], text: s.text, spoken: input }, null, "\t")}\n`);
+			writeFileSync(
+				metaFile,
+				`${JSON.stringify({ key, duration: durations[s.id], text: s.text, spoken: input, voice: settings.voice }, null, "\t")}\n`,
+			);
 			console.log(`  ✓ ${s.id.padEnd(28)} ${seconds.toFixed(1).padStart(5)} s`);
 		}
 	};
@@ -495,7 +628,7 @@ function plan(segments, videoLength, { gap, maxTempo }) {
 function cues(planned) {
 	const out = [];
 	for (const s of planned) {
-		const words = s.text.trim().split(/\s+/);
+		const words = untag(s.text).plain.split(/\s+/);
 		const chunks = [];
 		let line = "";
 		for (const w of words) {
@@ -670,11 +803,14 @@ function mix(video, timelineFile, args) {
 		...data,
 		video: relative(dirname(outBase), out),
 		duration: Math.round(finalLength * 1000) / 1000,
+		// What `upload` needs for folipage to say a line again the same way.
+		original: options.original > 0 && hasAudio(videoPath) ? options.original : 0,
 		segments: planned.map((p) => ({
 			id: p.id,
 			text: p.text,
 			start: Math.round(p.newStart * 1000) / 1000,
 			end: Math.round((p.newStart + p.spoken) * 1000) / 1000,
+			tempo: Math.round(p.tempo * 10000) / 10000,
 		})),
 	};
 	writeFileSync(`${outBase}.timeline.json`, `${JSON.stringify(timeline, null, "\t")}\n`);
@@ -686,6 +822,69 @@ function mix(video, timelineFile, args) {
 	if (frozen.length)
 		console.log(`  picture held for the voice: ${frozen.map((p) => `${p.id} +${p.freeze.toFixed(1)} s at ${p.freezeAt.toFixed(1)} s`).join(", ")}`);
 	if (faster.length) console.log(`  sped up: ${faster.map((p) => `${p.id} ×${p.tempo.toFixed(2)}`).join(", ")}`);
+	if (setting("FOLIPAGE_TOKEN"))
+		console.log(`  into folipage's archive: node voiceover.mjs upload "${out}" "${outBase}.timeline.json" --audio "${audioDir}"`);
+}
+
+/* ----------------------------------------------------------------- upload */
+
+/**
+ * The mixed video into the organization's archive in folipage (Knihovna › Videa s hlasem): the MP4, the
+ * lines and every line's audio, so that a member can fix the subtitles there, have one line
+ * said again for credits, or ask for the whole video to be recorded again.
+ */
+async function upload(video, timelineFile, args) {
+	if (backend().kind !== "folipage") fail("upload needs FOLIPAGE_TOKEN: the archive is folipage's.", 2);
+	const videoPath = resolve(video);
+	const timelinePath = resolve(timelineFile);
+	if (!existsSync(videoPath)) fail(`No video at ${videoPath}`);
+	const data = readJson(timelinePath);
+	const audioDir = resolve(args.audio ?? join(dirname(timelinePath), "audio"));
+	const segments = checkSegments(data, timelineFile).map((s) => {
+		if (typeof s.start !== "number") fail(`Segment "${s.id}" has no "start"; upload the timeline \`mix\` wrote.`);
+		const wav = join(audioDir, `${s.id}.wav`);
+		if (!existsSync(wav)) fail(`No audio for "${s.id}" in ${audioDir}; pass the --audio folder synth wrote.`);
+		const metaFile = join(audioDir, `${s.id}.json`);
+		const meta = existsSync(metaFile) ? JSON.parse(readFileSync(metaFile, "utf8")) : {};
+		return { id: s.id, text: s.text, start: s.start, end: s.end, tempo: s.tempo, voice: meta.voice ?? data.voice, wav };
+	});
+	const lang = languageTag(data.language ?? args.lang, '"language"');
+	const size = statSync(videoPath).size;
+	if (size > 300 * 1024 * 1024) fail(`The video is ${(size / 1048576).toFixed(0)} MB; folipage takes up to 300 MB.`);
+	const script = args.script ? readJson(resolve(args.script)) : undefined;
+	const title = String(args.title ?? data.title ?? basename(videoPath, extname(videoPath))).slice(0, 200);
+
+	const org = await folipageOrg();
+	const json = { "Content-Type": "application/json" };
+	const made = await (
+		await folipage(`/orgs/${org.id}/videos`, {
+			method: "POST",
+			headers: json,
+			body: JSON.stringify({
+				title,
+				language: lang,
+				duration: data.duration ?? duration(videoPath),
+				original: Number(data.original ?? 0),
+				voice: data.voice,
+				instructions: data.instructions,
+				pronounce: data.pronounce,
+				script,
+				segments: segments.map(({ wav: _wav, ...s }) => s),
+			}),
+		})
+	).json();
+	const { base } = backend();
+	const put = async (path, file, type) =>
+		folipage(path.replace(/^\/api\/v1/, ""), { method: "PUT", headers: { "Content-Type": type }, body: readFileSync(file) });
+
+	console.log(`Uploading "${title}" (${(size / 1048576).toFixed(1)} MB, ${segments.length} lines) to "${org.name}" …`);
+	await put(made.upload.file, videoPath, "video/mp4");
+	const queue = [...segments];
+	const worker = async () => {
+		for (let s = queue.shift(); s; s = queue.shift()) await put(made.upload.audio[s.id], s.wav, "audio/wav");
+	};
+	await Promise.all(Array.from({ length: 3 }, worker));
+	console.log(`\n✓ In folipage: ${base}/o/${org.id}/marie/videos/${made.video.id}`);
 }
 
 /* ------------------------------------------------------------- transcribe */
@@ -773,11 +972,12 @@ const args = parseArgs(process.argv.slice(2));
 const [command, a, b] = args._;
 const usage = () => console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("*/")[0].replace(/^#!.*\n\/\*\*?/, "").replace(/^ \* ?/gm, ""));
 try {
-	if (command === "voices") voices();
+	if (command === "voices") await voices(args);
 	else if (command === "languages") languages();
 	else if (command === "say" && a) await say(a, args);
 	else if (command === "synth" && a) await synth(a, args);
 	else if (command === "mix" && a && b) mix(a, b, args);
+	else if (command === "upload" && a && b) await upload(a, b, args);
 	else if (command === "transcribe" && a) await transcribe(a, args);
 	else if (command === "frames" && a) frames(a, args);
 	else {

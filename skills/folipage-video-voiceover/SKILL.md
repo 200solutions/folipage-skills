@@ -1,15 +1,15 @@
 ---
 name: folipage-video-voiceover
-description: Add a spoken voiceover to a video with AI text-to-speech (from folipage on the organization's AI credits, or OpenAI with your own key) in the language the user picks (57 languages — Czech, Slovak, English, German, Polish, French, Spanish …), timed to the picture, with subtitles. Also dubs an existing video into another language by transcribing it, translating the script and replacing the speech. Use when the user wants to narrate, voice over, dub, "nadabovat" or "namluvit" a video or screen recording, translate a video's speech, or add narration in any language to a tutorial or product video.
+description: Add a spoken, expressive voiceover to a video with AI text-to-speech (ElevenLabs voices from folipage on the organization's AI credits, directed with emotion tags) in the language the user picks (57 languages — Czech, Slovak, English, German, Polish, French, Spanish …), timed to the picture, with subtitles. Also dubs an existing video into another language by transcribing it, translating the script and replacing the speech. Use when the user wants to narrate, voice over, dub, "nadabovat" or "namluvit" a video or screen recording, translate a video's speech, or add narration in any language to a tutorial or product video.
 metadata:
-  version: "1.0.0"
+  version: "1.3.0"
 ---
 
 # Video voiceover
 
 You give a video a voice: you write (or translate) a short narration script,
-generate each line with OpenAI's speech model (through folipage, or straight
-from OpenAI), and lay the lines onto the
+direct how each line is said (excited, calm, curious, relieved …), generate
+the lines with folipage's ElevenLabs voices, and lay them onto the
 video at the right moments. Where a line is longer than the picture allows,
 the picture holds still until the voice finishes. You hand back an MP4 with
 the voice, plus `.srt` and `.vtt` subtitles.
@@ -20,8 +20,8 @@ the voice, plus `.srt` and `.vtt` subtitles.
 | --- | --- |
 | `scripts/check-version.mjs` | Run first, every time (below). |
 | `references/timeline-format.md` | Before writing or editing a segments/timeline file. |
-| `references/narration-guide.md` | Before writing or translating narration: writing for the ear, length and register per language, numbers, names, pronunciation fixes. |
-| `scripts/voiceover.mjs` | Everything: `languages`, `voices`, `say`, `synth`, `mix`, `transcribe`, `frames`. Run it without arguments for help. |
+| `references/narration-guide.md` | Before writing or translating narration: writing for the ear, directing the voice with tags, length and register per language, numbers, names, pronunciation fixes. |
+| `scripts/voiceover.mjs` | Everything: `languages`, `voices`, `say`, `synth`, `mix`, `upload`, `transcribe`, `frames`. Run it without arguments for help. |
 
 Below, `$SKILL` is the directory this file is in.
 
@@ -48,8 +48,7 @@ node $SKILL/scripts/check-version.mjs
   directory (or a parent), or `$SKILL/folipage.env` — the script reads them
   in that order, and looks for these:
   1. `FOLIPAGE_TOKEN` — a folipage API token. The voice comes from folipage
-     and the organization's AI credits (Marie's credits) pay for it; no OpenAI
-     account is needed. A skill downloaded from folipage already has the
+     and the organization's AI credits (Marie's credits) pay for it. A skill downloaded from folipage already has the
      user's token, URL and organization in `$SKILL/folipage.env`: then there
      is nothing to set up. Otherwise the user creates it in folipage under **Profil › API
      › Nový klíč** with **Čtení i úpravy** and *without* „Omezit na vybrané
@@ -59,18 +58,20 @@ node $SKILL/scripts/check-version.mjs
      pays.
      `FOLIPAGE_URL` is only for a folipage that does not run at
      https://app.folipage.com.
-  2. `OPENAI_API_KEY` — the user's own OpenAI key, billed by OpenAI.
+  2. `OPENAI_API_KEY` — only for `transcribe` without a folipage token
+     (dubbing), billed by OpenAI. It gives no voice: the voices are
+     folipage's alone.
 
-  If neither is there, ask the user for a folipage token (recommended) and
-  tell them where to create it. **Never print, echo or log a token or key**,
+  Without a folipage token, ask the user for one and tell them where to
+  create it. **Never print, echo or log a token or key**,
   and never write one into a file yourself: the user puts it into `.env`.
-- The text of every segment is sent to folipage and OpenAI (or to OpenAI
-  alone with the user's own key). Tell the user once, before the first
-  `synth`, and do not narrate personal or confidential data.
-- With folipage, a line costs about 5 credits per 100 characters and a
-  transcription about 15 credits per minute of speech; the organization's
-  credits and what is left are behind the credits button in the console's
-  top bar, under „Hlas videa“ and „Přepis videa“. When they
+- The text of every segment is sent to folipage, which has it checked by
+  OpenAI's moderation and spoken by ElevenLabs. Tell the user once, before
+  the first `synth`, and do not narrate personal or confidential data.
+- A line costs 35 credits per started 100 characters (tags count as
+  characters), and a transcription about 15 credits per minute of speech;
+  the organization's credits and what is left are behind the credits button
+  in the console's top bar, under „Prémiový hlas videa“ and „Přepis videa“. When they
   run out, the script stops with folipage's own message — tell the user,
   don't retry.
 
@@ -128,28 +129,48 @@ and sound go with it — say so to the user).
 1. **Agree on the script.** Write the narration (or translation) and show it
    to the user as a plain list of lines before generating anything. Follow
    `references/narration-guide.md`.
-2. **Pick the voice.** Default `marin` (natural, higher) or `cedar`
-   (natural, lower); every voice speaks every language. If the user cares —
-   or the language is not a common one — generate two samples of the first
-   line in that language with `say` and let them listen:
+2. **Pick the voice.** The organization has its own voice for each
+   language, chosen in the console on the **Marie** page: leave out
+   `--voice` and `"voice"` and that one speaks.
+   `node $SKILL/scripts/voiceover.mjs voices --lang <code>` lists the voices
+   that speak the language, with the organization's marked — for Czech,
+   native Czech women, men and two children (`jana`, `anet`, `eliska`,
+   `marek`, `daniel`, `jan`, `tomas`, `piku`, `teddy` …) who speak Czech
+   only; ElevenLabs' international ones speak every language, with an
+   accent outside English — and after them the audio tags they act out.
+   Name a voice only when the user asks for one. If the user cares — or the
+   language is not a common one — generate the first line in two voices
+   with `say` and let them listen:
    ```bash
-   node $SKILL/scripts/voiceover.mjs say "Guten Tag, in diesem Video legen wir eine Rechnung an." --lang de --voice marin
-   node $SKILL/scripts/voiceover.mjs say "Guten Tag, in diesem Video legen wir eine Rechnung an." --lang de --voice cedar
+   node $SKILL/scripts/voiceover.mjs say "[warmly] Guten Tag, in diesem Video legen wir eine Rechnung an." --lang de --voice sarah
+   node $SKILL/scripts/voiceover.mjs say "[warmly] Guten Tag, in diesem Video legen wir eine Rechnung an." --lang de --voice george
    ```
    On macOS they play with `afplay <file>`.
-3. **Synthesize.** `synth <file>` writes `audio/<id>.wav` per segment and
+3. **Direct the voice.** Give the narration an arc with audio tags in
+   square brackets — warm or excited at the start, calm through the steps,
+   curious before a question, relieved after a tricky step, happy when the
+   result appears — following „Directing the voice“ in
+   `references/narration-guide.md`: a tag on about a third of the lines,
+   never the same one twice in a row, none on a plain instruction, a laugh
+   or a sigh only once or twice a video. Czech tags are fine (`[nadšení]`,
+   `[úleva]`); the full vocabulary is at the end of `voices`. Tags are never
+   spoken and never in the subtitles. Show them in the script the user
+   approves, and preview the most directed lines with `say` before
+   `synth`. If the user wants a plain, even voice, leave the tags out.
+4. **Synthesize.** `synth <file>` writes `audio/<id>.wav` per segment and
    `audio/durations.json`. Unchanged lines are reused, so re-running after
    editing one line costs one line.
-4. **Fix pronunciation.** Transcribe your own result to hear it "through
+5. **Fix pronunciation.** Transcribe your own result to hear it "through
    another ear" — `transcribe out.<lang>.mp4 --source-lang <lang> --out check.json`
    — and compare `source` with what you wrote. Words that come back wrong
    (brand names, abbreviations, foreign terms) go into `pronounce`, spelled
    the way that language would write the sound, e.g. Czech
-   `{"Folipage": "Folipejdž", "PDF": "pé dé ef"}`, German
+   `{"PDF": "pé dé ef"}` (folipage itself is said "folipejdž" in Czech and
+   Slovak without it), German
    `{"Folipage": "Folipejdsch"}`; re-run `synth`. If you do not speak the
    language well, say so and ask the user (or a native speaker) to listen
    to the result before it is published.
-5. **Mix.**
+6. **Mix.**
    ```bash
    node $SKILL/scripts/voiceover.mjs mix video.mp4 video.timeline.json --audio audio [--subs embed] [--max-tempo 1.1] [--original 0.15]
    ```
@@ -160,21 +181,33 @@ and sound go with it — say so to the user).
    - `--subs embed` also puts a subtitle track inside the MP4.
    The output is `<video>.<lang>.mp4` with `.srt`, `.vtt` and an updated
    `.timeline.json` next to it. The report says where the picture was held.
-6. **Check it.** Pull a few frames where the picture was held
+7. **Check it.** Pull a few frames where the picture was held
    (`ffmpeg -ss <t> -i out.mp4 -frames:v 1 check.jpg`) and look at them; read
    the `.srt` against the script. If a hold looks odd (frozen mid-animation),
    shorten that line or move its `end`.
-7. **Hand over** the MP4 and subtitle files, the voice and model used, the
-   number of characters sent (and whether folipage's credits or the user's
-   own OpenAI key paid), and anything you could not get right
-   (a word the voice keeps mispronouncing).
+8. **Into folipage's archive** (with a folipage token; ask the user first —
+   it uploads the video to their organization):
+   ```bash
+   node $SKILL/scripts/voiceover.mjs upload video.<lang>.mp4 video.<lang>.timeline.json --audio audio [--title "Jak založit fakturu"] [--script video.json]
+   ```
+   It sends the mixed MP4, the lines and every line's audio, and prints the
+   video's address in the console (**Knihovna › Videa s hlasem**). There a member fixes
+   a subtitle for free, has one line said again for credits where it fits,
+   or presses „Zkusit znovu“ to have the whole video recorded again —
+   `--script` (the `folipage-screen-video` script it was recorded from) is
+   what that is done by. Up to 300 MB per video. Upload the timeline `mix`
+   wrote (`<output>.timeline.json`), not the one you gave it.
+9. **Hand over** the MP4 and subtitle files (and the folipage address, if
+   uploaded), the voice used, the number of characters sent (folipage's
+   credits paid), and
+   anything you could not get right (a word the voice keeps mispronouncing).
 
 ## Rules
 
 - The language is the user's choice; never fall back to Czech or English
   on your own.
 - The user approves the narration text before `synth`.
-- Never print or store the folipage token or the OpenAI key; never narrate
+- Never print or store the folipage token or an OpenAI key; never narrate
   personal data.
 - Never overwrite the source video; `mix` writes a new file.
 - Say plainly that the voice is synthetic if the user plans to publish the
